@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img alt="Minecraft 26.1 / 26.2" src="https://img.shields.io/badge/Minecraft-26.1%20%7C%2026.2-62b47a?style=flat-square">
+  <img alt="Minecraft 26.3" src="https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square">
   <img alt="Fabric" src="https://img.shields.io/badge/Loader-Fabric-dbb35c?style=flat-square">
   <img alt="Java 25" src="https://img.shields.io/badge/Java-25-f89820?style=flat-square">
   <img alt="Client side" src="https://img.shields.io/badge/Side-Client%20only-8a63d2?style=flat-square">
@@ -36,21 +36,21 @@ TrueSight 不猜、不扫假矿,它用一套精确的**发包策略**让服务�
 - 🧠 **自动适配服务器配置** —— 自动识别 Anti-Xray 的 `update-radius`,不用改任何设置
 - 🧱 **累积地图** —— 走过的地方矿物持续显示,直到被挖掉或区块重载
 - 🖥️ **纯客户端** —— 服务器不需要装任何东西,不改游戏文件,一个 jar 丢进 `mods` 就行
-- 📦 **一个 jar 通吃 26.1.x / 26.2** —— 不用为每个版本找对应下载
+- 📦 **适配 Minecraft 26.3** —— 支持 26.3 及以上版本
 - ✂️ **极简** —— 一个命令、零配置文件、零线程、唯一一个 mixin
 
 ## 📥 下载与安装
 
 下载地址(永恒世界官网):**https://4.mcyyy.com/resources/truesight**
 
-1. 安装 [Fabric Loader](https://fabricmc.net/) 和 [Fabric API](https://modrinth.com/mod/fabric-api)(Minecraft 26.1 及以上)
+1. 安装 [Fabric Loader](https://fabricmc.net/) 和 [Fabric API](https://modrinth.com/mod/fabric-api)(Minecraft 26.3 及以上)
 2. 把 `truesight-*.jar` 放进 `.minecraft/mods/`
 3. 进服务器,打字 `/truesight`,开挖 ⛏️
 
 ## 🎮 用法
 
 ```
-/truesight                            开 / 关
+/truesight                            开 /关
 /truesight <半径> [每批包数] [休息ms]     带参数开启
 ```
 
@@ -76,7 +76,7 @@ TrueSight 不猜、不扫假矿,它用一套精确的**发包策略**让服务�
 
 针对 Paper 反矿透的真实实现 `ChunkPacketBlockControllerAntiXray` 设计:
 
-1. **一包揭一片**。服务器收到任意挖掘动作包(哪怕是 `ABORT_DESTROY_BLOCK`)都会调 `updateNearbyBlocks`,把目标格周围 `update-radius` 范围内、真实方块属于伪装名单的格子广播出来。`update-radius=2`(默认)是曼哈顿距离 1~2 的 24 格,`=1` 只有 6 个面邻居。
+1. **一包揭一片**。服务器收到任意挖掘动作包(哪怕是 `ABORT_DESTROY_BLOCK`)都会调 `updateNearbyBlocks`,把目标格周围 `update-radius` 范围内的真实方块广播出来:radius=2 是曼哈顿距离 1~2 的 24 格,`=1` 只有 6 个面邻居。
 2. **按点阵发包**。radius=2 按 `x+3y+8z ≡ 0 (mod 16)` 的点阵发(穷举验证过是能盖满全空间的最稀点阵,每 16 格 1 包),radius=1 按 `x+2y+3z ≡ 0 (mod 7)` 的完美点阵发;可达区边缘盖不到的再贪心补几个。
 3. **只信服务器回的包**。反矿透只伪装整块的区块包,单格 / 分段更新包一律是真方块。所以"已揭示"只在收到 `ClientboundBlockUpdatePacket` / `ClientboundSectionBlocksUpdatePacket` 时登记,目标矿也在收包时当场判定。发了包但服务器没回的格子(超距、真方块不在伪装名单、被 Folia 区域线程丢弃……)不会被当真。
 4. **不重复发包**。已揭示的格子不再发;每格最多被覆盖 2 次,还没回就放弃(直到区块重载)。
@@ -85,8 +85,8 @@ TrueSight 不猜、不扫假矿,它用一套精确的**发包策略**让服务�
 
 ## 🧩 版本兼容
 
-- **一个 jar 覆盖 26.1.x 和 26.2**(`minecraft >= 26.1`),分别对着 26.1.2 和 26.2 编译验证过。发包、收包、区块、交互距离这些 API 在 26.1.1 → 26.2 之间一字未改。
-- 唯一逐版本变的是渲染:26.2 删掉了 `MultiBufferSource`、改了 `LevelRenderer` 和管线 builder。所以渲染不写 mixin,走 Fabric API 的 `LevelRenderEvents.COLLECT_SUBMITS` + `submitCustomGeometry`,管线直接继承原版 `DEBUG_FILLED_SNIPPET`,两个版本签名一致。
+- 适配 **Minecraft 26.3**(`minecraft >= 26.3`)。
+- 渲染管线：26.3 中 Mojang 将 RenderPipeline 迁移至 `com.mojang.renderpearl.api.pipeline`。渲染通过 Fabric API 的 `LevelRenderEvents.COLLECT_SUBMITS` + `submitCustomGeometry`，管线继承原版 `DEBUG_FILLED_SNIPPET`。
 
 ## 🛠️ 构建
 
@@ -96,7 +96,7 @@ Gradle + fabric-loom,Java 25:
 ./gradlew build
 ```
 
-产物在 `build/libs/`。想对着别的版本编译,改 `gradle.properties` 里的 `minecraft_version` 和 `fabric_api_version` 即可,源码不用动。
+产物在 `build/libs/`。
 
 ## 📂 源码结构
 
@@ -114,5 +114,5 @@ Gradle + fabric-loom,Java 25:
 ---
 
 <p align="center">
-  <sub>Keywords: Minecraft X-Ray · 矿透 · 反矿透破解 · Anti-Xray bypass · Paper Anti-Xray · Folia · Canvas · Fabric mod · 钻石透视 · 远古残骸 · 下界合金 · Ancient Debris ESP · Diamond ESP · Ore ESP · 矿物透视 · 26.1 · 26.2 · 客户端 mod · 真视</sub>
+  <sub>Keywords: Minecraft X-Ray · 矿透 · 反矿透破解 · Anti-Xray bypass · Paper Anti-Xray · Folia · Canvas · Fabric mod · 钻石透视 · 远古残骸 · 下界合金 · Ancient Debris ESP · Diamond ESP · Ore ESP · 矿物透视 · 26.3 · 客户端 mod · 真视</sub>
 </p>
