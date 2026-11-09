@@ -1,29 +1,29 @@
 package me.albert.truesight;
 
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
-import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.resources.Identifier;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.Optional;
 
 /**
- * 透视用的两个渲染层（高亮矿物方块与准星射线）：
+ * 透视用的两个渲染层，都去掉深度测试（隔墙可见）：
+ * - ESP_QUADS: 填充方块透视高亮
+ * - ESP_LINES: 射线透视高亮
  *
- * 兼容性说明：
- * - Minecraft 26.1 / 26.2 中 RenderPipeline 位于 com.mojang.blaze3d.pipeline.RenderPipeline
- * - Minecraft 26.3+ 中 RenderPipeline 迁移至 com.mojang.renderpearl.api.pipeline.RenderPipeline，
- *   并且引入了 OIT（顺序无关半透明渲染）的多附件 RenderPass。
- * 如果自定义注册 RenderPipeline 而未正确挂载 OitPipelineSet，或者 colorTargetStates 数量与 RenderPass 的
- * color attachment 数量不匹配，将在 26.3 下抛出：
- *   IllegalStateException: Render pass color attachment count must match pipeline color target state count.
- *
- * 原版 RenderTypes 提供了官方配置好所有 OIT 与深度属性的渲染层：
- * - 方块高亮：RenderTypes.debugFilledBox() / debugQuads()（在 26.1-26.3 均完整存在且配置好 OIT/透明混合）
- * - 射线：RenderTypes.linesTranslucentNoDepthWrite()（26.3+ 新增，关闭深度写入且支持 OIT）/ linesTranslucent()（26.1-26.2 回退）
- *
- * 通过动态检测原版提供的 RenderType，既杜绝了硬编码 RenderPipeline 类路径导致的 ClassNotFoundException，
- * 也彻底避免了 26.3 OIT 管线中 color attachment 数量不匹配的崩溃，100% 兼顾 26.1、26.2 与 26.3。
+ * 兼容性实现：
+ * - 26.1 / 26.2: RenderPipeline 位于 com.mojang.blaze3d.pipeline.RenderPipeline，构建无深度测试的 Pipeline。
+ * - 26.3+: RenderPipeline 位于 com.mojang.renderpearl.api.pipeline.RenderPipeline。
+ *   在 26.3 中，原版增加了 OIT（顺序无关半透明渲染）。如果自定义 RenderPipeline 未挂载 OitPipelineSet，
+ *   在多附件的 RenderPass 中会导致颜色附件数与管线不匹配的 IllegalStateException。
+ *   因此，26.3 下使用 OitPipelineSet.builder(...).withoutDepthTest().build() 动态创建并注册 OIT 管线集合，
+ *   使方块在完全关闭深度测试（隔墙穿透可见）的同时，完美兼容 26.3 的 OIT 渲染。
  */
 public final class TrueSightRenderTypes {
 
@@ -32,8 +32,8 @@ public final class TrueSightRenderTypes {
 
     static {
         try {
-            ESP_QUADS = resolveEspQuads();
-            ESP_LINES = resolveEspLines();
+            ESP_QUADS = createEspQuads();
+            ESP_LINES = createEspLines();
         } catch (Throwable t) {
             throw new ExceptionInInitializerError(t);
         }
@@ -42,69 +42,189 @@ public final class TrueSightRenderTypes {
     private TrueSightRenderTypes() {
     }
 
-    private static RenderType resolveEspQuads() throws Exception {
-        // 优先查找 RenderTypes.debugFilledBox() 或 debugQuads()
-        for (String methodName : new String[]{"debugFilledBox", "debugQuads"}) {
-            Method m = findStaticMethod(RenderTypes.class, methodName);
-            if (m != null) {
-                return (RenderType) m.invoke(null);
-            }
+    private static RenderType createEspQuads() throws Exception {
+        Object snippet = getSnippet("DEBUG_FILLED_SNIPPET");
+        Identifier location = Identifier.fromNamespaceAndPath("truesight", "pipeline/esp_quads");
+        Object pipeline = buildPipeline(snippet, location);
+        registerPipeline(pipeline);
+
+        Object oitSet = tryBuildOitSet("OIT_DEBUG_FILLED_SNIPPET", "esp_quads");
+        if (oitSet != null) {
+            registerOitSet(oitSet);
         }
-        for (String fieldName : new String[]{"DEBUG_FILLED_BOX", "DEBUG_QUADS"}) {
-            Field f = findStaticField(RenderTypes.class, fieldName);
-            if (f != null) {
-                return (RenderType) f.get(null);
-            }
-        }
-        throw new NoSuchMethodException("Cannot resolve debugFilledBox/debugQuads RenderType");
+
+        RenderSetup setup = buildRenderSetup(pipeline, oitSet, true);
+        return createRenderType("truesight:esp_quads", setup);
     }
 
-    private static RenderType resolveEspLines() throws Exception {
-        // 26.3+ 优先 linesTranslucentNoDepthWrite()，旧版回退 linesTranslucent() / lines()
-        for (String methodName : new String[]{
-                "linesTranslucentNoDepthWrite",
-                "linesTranslucent",
-                "lines"
-        }) {
-            Method m = findStaticMethod(RenderTypes.class, methodName);
-            if (m != null) {
-                return (RenderType) m.invoke(null);
-            }
+    private static RenderType createEspLines() throws Exception {
+        Object snippet = getSnippet("LINES_SNIPPET");
+        Identifier location = Identifier.fromNamespaceAndPath("truesight", "pipeline/esp_lines");
+        Object pipeline = buildPipeline(snippet, location);
+        registerPipeline(pipeline);
+
+        Object oitSet = tryBuildOitSet("OIT_LINES_SNIPPET", "esp_lines");
+        if (oitSet != null) {
+            registerOitSet(oitSet);
         }
-        for (String fieldName : new String[]{
-                "LINES_TRANSLUCENT_NO_DEPTH_WRITE",
-                "LINES_TRANSLUCENT",
-                "LINES"
-        }) {
-            Field f = findStaticField(RenderTypes.class, fieldName);
-            if (f != null) {
-                return (RenderType) f.get(null);
-            }
-        }
-        throw new NoSuchMethodException("Cannot resolve linesTranslucent RenderType");
+
+        RenderSetup setup = buildRenderSetup(pipeline, oitSet, false);
+        return createRenderType("truesight:esp_lines", setup);
     }
 
-    private static Method findStaticMethod(Class<?> clazz, String name) {
+    private static Object getSnippet(String fieldName) throws Exception {
+        Field field = RenderPipelines.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.get(null);
+    }
+
+    private static Object buildPipeline(Object snippet, Identifier location) throws Exception {
+        Class<?> snippetClass = snippet.getClass();
+        Class<?> pipelineClass = resolvePipelineClass(snippetClass);
+
+        Object snippetArray = Array.newInstance(snippetClass, 1);
+        Array.set(snippetArray, 0, snippet);
+        Method builderMethod = pipelineClass.getMethod("builder", snippetArray.getClass());
+        builderMethod.setAccessible(true);
+        Object builder = builderMethod.invoke(null, snippetArray);
+
+        Method withLocationMethod = builder.getClass().getMethod("withLocation", Identifier.class);
+        withLocationMethod.setAccessible(true);
+        withLocationMethod.invoke(builder, location);
+
+        Method withDepthStencilMethod = builder.getClass().getMethod("withDepthStencilState", Optional.class);
+        withDepthStencilMethod.setAccessible(true);
+        withDepthStencilMethod.invoke(builder, Optional.empty());
+
+        Method withCullMethod = builder.getClass().getMethod("withCull", boolean.class);
+        withCullMethod.setAccessible(true);
+        withCullMethod.invoke(builder, false);
+
+        Method buildMethod = builder.getClass().getMethod("build");
+        buildMethod.setAccessible(true);
+        return buildMethod.invoke(builder);
+    }
+
+    private static Object tryBuildOitSet(String oitSnippetFieldName, String locationSuffix) {
         try {
-            Method m = clazz.getDeclaredMethod(name);
-            if (Modifier.isStatic(m.getModifiers()) && RenderType.class.isAssignableFrom(m.getReturnType())) {
+            Field oitSnippetField = null;
+            try {
+                oitSnippetField = RenderPipelines.class.getDeclaredField(oitSnippetFieldName);
+            } catch (NoSuchFieldException e) {
+                return null;
+            }
+            oitSnippetField.setAccessible(true);
+            Object oitSnippet = oitSnippetField.get(null);
+            if (oitSnippet == null) return null;
+
+            Class<?> oitBuilderClass = findClass("net.minecraft.client.renderer.oit.OitPipelineSet$Builder");
+            if (oitBuilderClass == null) return null;
+
+            Constructor<?> ctor = oitBuilderClass.getDeclaredConstructor(oitSnippet.getClass(), String.class);
+            ctor.setAccessible(true);
+            Object oitBuilder = ctor.newInstance(oitSnippet, locationSuffix);
+
+            Method withoutDepthTest = oitBuilderClass.getMethod("withoutDepthTest");
+            withoutDepthTest.setAccessible(true);
+            withoutDepthTest.invoke(oitBuilder);
+
+            Method buildMethod = oitBuilderClass.getMethod("build");
+            buildMethod.setAccessible(true);
+            return buildMethod.invoke(oitBuilder);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static void registerPipeline(Object pipeline) throws Exception {
+        Class<?> pipelineClass = pipeline.getClass();
+        for (Method m : RenderPipelines.class.getDeclaredMethods()) {
+            if (m.getName().equals("register") && m.getParameterCount() == 1
+                    && m.getParameterTypes()[0].isAssignableFrom(pipelineClass)
+                    && Modifier.isStatic(m.getModifiers())) {
                 m.setAccessible(true);
-                return m;
+                m.invoke(null, pipeline);
+                return;
             }
-        } catch (NoSuchMethodException ignored) {
         }
-        return null;
+        throw new NoSuchMethodException("RenderPipelines.register(" + pipelineClass.getName() + ")");
     }
 
-    private static Field findStaticField(Class<?> clazz, String name) {
+    private static void registerOitSet(Object oitSet) {
         try {
-            Field f = clazz.getDeclaredField(name);
-            if (Modifier.isStatic(f.getModifiers()) && RenderType.class.isAssignableFrom(f.getType())) {
-                f.setAccessible(true);
-                return f;
+            for (Method m : RenderPipelines.class.getDeclaredMethods()) {
+                if (m.getName().equals("register") && m.getParameterCount() == 1
+                        && m.getParameterTypes()[0].isAssignableFrom(oitSet.getClass())
+                        && Modifier.isStatic(m.getModifiers())) {
+                    m.setAccessible(true);
+                    m.invoke(null, oitSet);
+                    return;
+                }
             }
-        } catch (NoSuchFieldException ignored) {
+        } catch (Throwable ignored) {
         }
-        return null;
+    }
+
+    private static RenderSetup buildRenderSetup(Object pipeline, Object oitSet, boolean sortOnUpload) throws Exception {
+        Method builderMethod = null;
+        for (Method m : RenderSetup.class.getDeclaredMethods()) {
+            if (m.getName().equals("builder") && m.getParameterCount() == 1
+                    && Modifier.isStatic(m.getModifiers())) {
+                builderMethod = m;
+                break;
+            }
+        }
+        if (builderMethod == null) {
+            throw new NoSuchMethodException("RenderSetup.builder(RenderPipeline)");
+        }
+        builderMethod.setAccessible(true);
+        Object setupBuilder = builderMethod.invoke(null, pipeline);
+
+        if (oitSet != null) {
+            try {
+                Method setOitMethod = setupBuilder.getClass().getMethod("setOitPipelines", oitSet.getClass());
+                setOitMethod.setAccessible(true);
+                setOitMethod.invoke(setupBuilder, oitSet);
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+
+        if (sortOnUpload) {
+            Method sortMethod = setupBuilder.getClass().getMethod("sortOnUpload");
+            sortMethod.setAccessible(true);
+            sortMethod.invoke(setupBuilder);
+        }
+
+        Method createMethod = setupBuilder.getClass().getMethod("createRenderSetup");
+        createMethod.setAccessible(true);
+        return (RenderSetup) createMethod.invoke(setupBuilder);
+    }
+
+    private static RenderType createRenderType(String name, RenderSetup setup) throws Exception {
+        Method createMethod = RenderType.class.getDeclaredMethod("create", String.class, RenderSetup.class);
+        createMethod.setAccessible(true);
+        return (RenderType) createMethod.invoke(null, name, setup);
+    }
+
+    private static Class<?> resolvePipelineClass(Class<?> snippetClass) {
+        Class<?> pipelineClass = snippetClass.getDeclaringClass();
+        if (pipelineClass != null) return pipelineClass;
+        for (Class<?> candidate : new Class<?>[]{
+                findClass("com.mojang.renderpearl.api.pipeline.RenderPipeline"),
+                findClass("com.mojang.blaze3d.pipeline.RenderPipeline")
+        }) {
+            if (candidate != null && snippetClass.getName().startsWith(candidate.getName())) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("Cannot resolve RenderPipeline class for snippet: " + snippetClass);
+    }
+
+    private static Class<?> findClass(String name) {
+        try {
+            return Class.forName(name);
+        } catch (ClassNotFoundException e) {
+            return null;
+        }
     }
 }
