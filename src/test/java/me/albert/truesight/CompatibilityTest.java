@@ -3,7 +3,6 @@ package me.albert.truesight;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,5 +22,11 @@ public class CompatibilityTest {
                         "TrueSightRenderTypes method parameters should not reference RenderPipeline directly: " + method);
             }
         }
+    }
+
+    @Test
+    void testRenderTypesResolution() {
+        assertNotNull(TrueSightRenderTypes.ESP_QUADS, "ESP_QUADS should be resolved");
+        assertNotNull(TrueSightRenderTypes.ESP_LINES, "ESP_LINES should be resolved");
     }
 }
