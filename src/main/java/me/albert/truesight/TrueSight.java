@@ -413,8 +413,8 @@ public final class TrueSight {
         CameraRenderState camera = ctx.levelState().cameraRenderState;
         Vec3 cam = camera.pos;
         SubmitNodeCollector collector = ctx.submitNodeCollector();
-        // 渲染方块高亮：优先尝试原版 submitShapeOutline 机制（零着色器冲突、隔墙穿透可见）
-        renderOreHighlights(collector, ctx.poseStack(), cam);
+        // 渲染方块高亮：优先尝试原生 Gizmo / submitShapeOutline 机制（零着色器冲突、隔墙穿透可见）
+        renderOreHighlights(collector, ctx.poseStack(), cam, camera);
 
         // 只给离相机最近的一个矿画射线;原版 Camera 的 FORWARDS 是 (0,0,-1),按相机朝向旋转就是视线方向
         BlockPos nearest = nearestOre(cam);
@@ -427,15 +427,14 @@ public final class TrueSight {
         });
     }
 
-    private static void renderOreHighlights(SubmitNodeCollector collector, PoseStack poseStack, Vec3 cam) {
-        // 在 26.2/26.3 等版本中，通过 submitShapeOutline 提交方块框线，由原版原生管线绘制，隔墙无遮挡
-        if (canSubmitShapeOutline(collector)) {
-            for (BlockPos pos : displayedOres) {
-                poseStack.pushPose();
-                poseStack.translate(pos.getX() - cam.x, pos.getY() - cam.y, pos.getZ() - cam.z);
-                submitBlockShapeOutline(collector, poseStack, TrueSightRenderTypes.ESP_LINES, ESP_COLOR, 3.0f);
-                poseStack.popPose();
-            }
+    private static void renderOreHighlights(SubmitNodeCollector collector, PoseStack poseStack, Vec3 cam, CameraRenderState camera) {
+        // 方案 1: 优先尝试通过原生 Gizmo 提交置顶 (alwaysOnTop = true)，隔着方块完全可见且零管线冲突
+        if (tryRenderGizmos(collector, camera)) {
+            return;
+        }
+
+        // 方案 2: 尝试 submitShapeOutline（针对 26.2+，不透明度设为 255 走 solid 无深度冲突）
+        if (tryRenderShapeOutline(collector, poseStack, cam)) {
             return;
         }
 
@@ -447,36 +446,74 @@ public final class TrueSight {
         });
     }
 
-    private static boolean canSubmitShapeOutline(SubmitNodeCollector collector) {
+    private static boolean tryRenderGizmos(SubmitNodeCollector collector, CameraRenderState camera) {
         try {
-            return findSubmitShapeOutlineMethod(collector.getClass()) != null;
+            Class<?> gizmosClass = Class.forName("net.minecraft.client.renderer.gizmos.DrawableGizmoPrimitives");
+            Object gizmos = gizmosClass.getConstructor().newInstance();
+            Method addLine = gizmosClass.getMethod("addLine", net.minecraft.world.phys.Vec3.class, net.minecraft.world.phys.Vec3.class, int.class, float.class);
+            float width = 3.0f;
+            int color = ESP_COLOR;
+
+            for (BlockPos pos : displayedOres) {
+                int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+                net.minecraft.world.phys.Vec3 p000 = new net.minecraft.world.phys.Vec3(x, y, z);
+                net.minecraft.world.phys.Vec3 p100 = new net.minecraft.world.phys.Vec3(x + 1, y, z);
+                net.minecraft.world.phys.Vec3 p101 = new net.minecraft.world.phys.Vec3(x + 1, y, z + 1);
+                net.minecraft.world.phys.Vec3 p001 = new net.minecraft.world.phys.Vec3(x, y, z + 1);
+                net.minecraft.world.phys.Vec3 p010 = new net.minecraft.world.phys.Vec3(x, y + 1, z);
+                net.minecraft.world.phys.Vec3 p110 = new net.minecraft.world.phys.Vec3(x + 1, y + 1, z);
+                net.minecraft.world.phys.Vec3 p111 = new net.minecraft.world.phys.Vec3(x + 1, y + 1, z + 1);
+                net.minecraft.world.phys.Vec3 p011 = new net.minecraft.world.phys.Vec3(x, y + 1, z + 1);
+
+                addLine.invoke(gizmos, p000, p100, color, width);
+                addLine.invoke(gizmos, p100, p101, color, width);
+                addLine.invoke(gizmos, p101, p001, color, width);
+                addLine.invoke(gizmos, p001, p000, color, width);
+
+                addLine.invoke(gizmos, p010, p110, color, width);
+                addLine.invoke(gizmos, p110, p111, color, width);
+                addLine.invoke(gizmos, p111, p011, color, width);
+                addLine.invoke(gizmos, p011, p010, color, width);
+
+                addLine.invoke(gizmos, p000, p010, color, width);
+                addLine.invoke(gizmos, p100, p110, color, width);
+                addLine.invoke(gizmos, p101, p111, color, width);
+                addLine.invoke(gizmos, p001, p011, color, width);
+            }
+
+            // submit(collector, camera, alwaysOnTop = true)
+            for (Method m : gizmosClass.getMethods()) {
+                if (m.getName().equals("submit") && m.getParameterCount() == 3) {
+                    m.invoke(gizmos, collector, camera, true);
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static boolean tryRenderShapeOutline(SubmitNodeCollector collector, PoseStack poseStack, Vec3 cam) {
+        try {
+            Method m = null;
+            for (Method method : collector.getClass().getMethods()) {
+                if (method.getName().equals("submitShapeOutline") && method.getParameterCount() == 6) {
+                    m = method;
+                    break;
+                }
+            }
+            if (m == null) return false;
+
+            for (BlockPos pos : displayedOres) {
+                poseStack.pushPose();
+                poseStack.translate(pos.getX() - cam.x, pos.getY() - cam.y, pos.getZ() - cam.z);
+                m.invoke(collector, poseStack, net.minecraft.world.phys.shapes.Shapes.block(), TrueSightRenderTypes.ESP_LINES, ESP_COLOR, 3.0f, true);
+                poseStack.popPose();
+            }
+            return true;
         } catch (Throwable ignored) {
             return false;
         }
-    }
-
-    private static void submitBlockShapeOutline(SubmitNodeCollector collector, PoseStack poseStack,
-                                                net.minecraft.client.renderer.rendertype.RenderType renderType,
-                                                int color, float width) {
-        try {
-            Method m = findSubmitShapeOutlineMethod(collector.getClass());
-            if (m != null) {
-                m.invoke(collector, poseStack, net.minecraft.world.phys.shapes.Shapes.block(), renderType, color, width, true);
-            }
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private static Method cachedShapeOutlineMethod;
-    private static Method findSubmitShapeOutlineMethod(Class<?> clazz) {
-        if (cachedShapeOutlineMethod != null) return cachedShapeOutlineMethod;
-        for (Method m : clazz.getMethods()) {
-            if (m.getName().equals("submitShapeOutline") && m.getParameterCount() == 6) {
-                cachedShapeOutlineMethod = m;
-                return m;
-            }
-        }
-        return null;
     }
 
     /** displayedOres 非空时离 cam 最近的矿。 */
