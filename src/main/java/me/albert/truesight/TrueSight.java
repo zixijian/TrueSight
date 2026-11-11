@@ -2,6 +2,7 @@ package me.albert.truesight;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import java.lang.reflect.Method;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
@@ -412,11 +413,9 @@ public final class TrueSight {
         CameraRenderState camera = ctx.levelState().cameraRenderState;
         Vec3 cam = camera.pos;
         SubmitNodeCollector collector = ctx.submitNodeCollector();
-        collector.submitCustomGeometry(ctx.poseStack(), TrueSightRenderTypes.ESP_QUADS, (pose, buf) -> {
-            for (BlockPos pos : displayedOres) {
-                fillBox(pose, buf, ESP_COLOR, (float) (pos.getX() - cam.x), (float) (pos.getY() - cam.y), (float) (pos.getZ() - cam.z));
-            }
-        });
+        // 渲染方块高亮：优先尝试原版 submitShapeOutline 机制（零着色器冲突、隔墙穿透可见）
+        renderOreHighlights(collector, ctx.poseStack(), cam);
+
         // 只给离相机最近的一个矿画射线;原版 Camera 的 FORWARDS 是 (0,0,-1),按相机朝向旋转就是视线方向
         BlockPos nearest = nearestOre(cam);
         Vector3f start = new Vector3f(0, 0, -TRACER_START).rotate(camera.orientation);
@@ -426,6 +425,58 @@ public final class TrueSight {
             lineVertex(buf, pose, start, dir);
             lineVertex(buf, pose, end, dir);
         });
+    }
+
+    private static void renderOreHighlights(SubmitNodeCollector collector, PoseStack poseStack, Vec3 cam) {
+        // 在 26.2/26.3 等版本中，通过 submitShapeOutline 提交方块框线，由原版原生管线绘制，隔墙无遮挡
+        if (canSubmitShapeOutline(collector)) {
+            for (BlockPos pos : displayedOres) {
+                poseStack.pushPose();
+                poseStack.translate(pos.getX() - cam.x, pos.getY() - cam.y, pos.getZ() - cam.z);
+                submitBlockShapeOutline(collector, poseStack, TrueSightRenderTypes.ESP_LINES, ESP_COLOR, 3.0f);
+                poseStack.popPose();
+            }
+            return;
+        }
+
+        // fallback: submitCustomGeometry 填充方块
+        collector.submitCustomGeometry(poseStack, TrueSightRenderTypes.ESP_QUADS, (pose, buf) -> {
+            for (BlockPos pos : displayedOres) {
+                fillBox(pose, buf, ESP_COLOR, (float) (pos.getX() - cam.x), (float) (pos.getY() - cam.y), (float) (pos.getZ() - cam.z));
+            }
+        });
+    }
+
+    private static boolean canSubmitShapeOutline(SubmitNodeCollector collector) {
+        try {
+            return findSubmitShapeOutlineMethod(collector.getClass()) != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static void submitBlockShapeOutline(SubmitNodeCollector collector, PoseStack poseStack,
+                                                net.minecraft.client.renderer.rendertype.RenderType renderType,
+                                                int color, float width) {
+        try {
+            Method m = findSubmitShapeOutlineMethod(collector.getClass());
+            if (m != null) {
+                m.invoke(collector, poseStack, net.minecraft.world.phys.shapes.Shapes.block(), renderType, color, width, true);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Method cachedShapeOutlineMethod;
+    private static Method findSubmitShapeOutlineMethod(Class<?> clazz) {
+        if (cachedShapeOutlineMethod != null) return cachedShapeOutlineMethod;
+        for (Method m : clazz.getMethods()) {
+            if (m.getName().equals("submitShapeOutline") && m.getParameterCount() == 6) {
+                cachedShapeOutlineMethod = m;
+                return m;
+            }
+        }
+        return null;
     }
 
     /** displayedOres 非空时离 cam 最近的矿。 */

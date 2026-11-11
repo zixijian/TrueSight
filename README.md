@@ -36,7 +36,7 @@ TrueSight 不猜、不扫假矿,它用一套精确的**发包策略**让服务�
 - 🧠 **自动适配服务器配置** —— 自动识别 Anti-Xray 的 `update-radius`,不用改任何设置
 - 🧱 **累积地图** —— 走过的地方矿物持续显示,直到被挖掉或区块重载
 - 🖥️ **纯客户端** —— 服务器不需要装任何东西,不改游戏文件,一个 jar 丢进 `mods` 就行
-- 📦 **一个 jar 通吃 26.1 / 26.2 / 26.3** —— 自动动态适配 RenderPipeline，不用为每个版本找对应下载
+- 📦 **一个 jar 通吃 26.1 / 26.2 / 26.3** —— 自动动态适配渲染管线，不用为每个版本找对应下载
 - ✂️ **极简** —— 一个命令、零配置文件、零线程、唯一一个 mixin
 
 ## 📥 下载与安装
@@ -87,7 +87,7 @@ TrueSight 不猜、不扫假矿,它用一套精确的**发包策略**让服务�
 
 - **一个 jar 覆盖 26.1.x / 26.2 / 26.3**(`minecraft >= 26.1`)。
 - 发包、收包、区块、交互距离等网络与世界交互 API 在 26.1 → 26.3 保持一致。
-- 渲染层面：26.3 中 Mojang 将 RenderPipeline 迁移到了 `com.mojang.renderpearl.api.pipeline`（旧版在 `com.mojang.blaze3d.pipeline`）。TrueSight 采用运行时动态管线构建与注册机制，不引入硬编码符号，避免在旧版或新版加载时产生 `NoClassDefFoundError`。渲染仍走 Fabric API 的 `LevelRenderEvents.COLLECT_SUBMITS` + `submitCustomGeometry`。
+- 渲染层面：采用纯净的 Fabric API `LevelRenderEvents.COLLECT_SUBMITS` 与原版内置原生渲染层动态适配，完全不引入私有管线注入或修改游戏，避免在旧版或新版加载时产生 `NoClassDefFoundError`，并天然杜绝了 Vitrail 等渲染增强模组的 Pass 附件数冲突。
 
 ## 🛠️ 构建
 
